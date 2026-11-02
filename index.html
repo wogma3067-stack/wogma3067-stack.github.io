@@ -155,6 +155,15 @@ a{color:var(--ice)}
 .hint{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(98px + var(--sb));margin:0;font-family:var(--f-mono);font-size:10.5px;letter-spacing:.1em;color:var(--dim);white-space:nowrap;pointer-events:none;transition:opacity .4s}
 #app.has-sel .hint{opacity:0}
 .credit{position:absolute;right:var(--gr);bottom:calc(20px + var(--sb));margin:0;max-width:220px;font-family:var(--f-mono);font-size:9.5px;letter-spacing:.04em;color:var(--dim);text-align:right;line-height:1.6;pointer-events:none}
+.tourcap{position:absolute;left:50%;transform:translateX(-50%);top:calc(84px + var(--st));display:flex;align-items:center;gap:16px;padding:10px 12px 12px 18px;min-width:min(440px, calc(100% - 32px));max-width:calc(100% - 32px);z-index:3;overflow:hidden}
+.tc-txt{min-width:0;flex:1}
+.tc-txt b{display:block;font:700 20px/1.1 var(--f-display);letter-spacing:.06em;color:var(--fg)}
+.tc-txt span{display:block;font-family:var(--f-mono);font-size:11px;color:var(--amber);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tc-skip{flex:none;height:32px;padding:0 12px;border:1px solid var(--hair-hi);border-radius:3px;background:none;color:var(--muted);font-size:12px;cursor:pointer}
+.tc-skip:hover{color:var(--fg)}
+.tc-bar{position:absolute;left:0;bottom:0;height:2px;width:0;background:linear-gradient(90deg,var(--ice),var(--amber))}
+.replay{display:block;width:100%;margin:0 0 12px;padding:9px 12px;border:1px solid rgba(242,196,135,.4);border-radius:3px;background:rgba(242,196,135,.07);color:var(--amber);font-size:12.5px;font-weight:500;cursor:pointer;text-align:left}
+.replay:hover{background:rgba(242,196,135,.14)}
 .toast{position:absolute;left:50%;transform:translateX(-50%);top:calc(88px + var(--st));padding:8px 14px;font-size:12px;color:var(--amber);border-color:rgba(242,196,135,.35);white-space:nowrap;z-index:3}
 
 #markers{position:absolute;inset:0;pointer-events:none;overflow:hidden}
@@ -212,6 +221,8 @@ a{color:var(--ice)}
   .nowbtn{display:none}
   .hr{min-width:52px;font-size:22px}
   .toast{top:calc(118px + var(--st))}
+  .tourcap{top:calc(118px + var(--st));min-width:0;width:calc(100% - 24px);padding:8px 10px 10px 14px}
+  .tc-txt b{font-size:17px}
 }
 @media (prefers-reduced-motion: reduce){
   .mk .ring::after,.kind::before{animation:none}
@@ -305,6 +316,7 @@ a{color:var(--ice)}
     </div>
     <div class="d-sec">
       <h3>진로 예보 <span>KST</span></h3>
+      <button class="replay" id="dReplay" type="button">▶ 발생부터 예보까지 경로 재생</button>
       <table class="fc">
         <thead><tr><th>시각</th><th>위치</th><th>풍속</th><th id="fcLast">기압</th></tr></thead>
         <tbody id="dFc"></tbody>
@@ -312,6 +324,11 @@ a{color:var(--ice)}
     </div>
   </aside>
 
+  <div class="tourcap panel" id="tourCap" hidden aria-live="polite">
+    <div class="tc-txt"><b id="tcMain"></b><span id="tcSub"></span></div>
+    <button class="tc-skip" id="tcSkip" type="button">건너뛰기</button>
+    <i class="tc-bar" id="tcBar"></i>
+  </div>
   <div class="toast panel" id="toast" hidden>예보 시각 보기 중 · 바람과 구름은 현재 자료입니다</div>
   <p class="hint">드래그 회전 · 스크롤 확대 · 태풍을 누르면 소용돌이로 이동</p>
 
@@ -794,7 +811,7 @@ document.getElementById('tTracers').textContent=NPART.toLocaleString('en-US');
 /* switch between the global trail map and a high-resolution regional one around the view */
 function clearRT(rt){ renderer.setRenderTarget(rt); renderer.clear(); }
 function updateWindRegion(){
-  const wantLocal=alt<1.15;
+  const wantLocal=alt<1.15&&!tour;
   if(!wantLocal){
     if(localMode){ localMode=false; simMat.uniforms.uReseed.value=1; trailRT.forEach(clearRT); renderer.setRenderTarget(null); }
   }else{
@@ -904,10 +921,11 @@ const swirlGroup=new THREE.Group(); globe.add(swirlGroup);
 const lineVS=`attribute float dist; varying float vD; void main(){ vD=dist; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`;
 function flowMat(color,opts){
   return new THREE.ShaderMaterial({
-    uniforms:{uTime:{value:0}, uColor:{value:new THREE.Color(color)}, uDash:{value:opts.dash||95}, uSpeed:{value:opts.speed||1}, uAlpha:{value:opts.alpha||0.85}, uTotal:{value:1}, uComet:{value:opts.comet?1:0}},
+    uniforms:{uTime:{value:0}, uColor:{value:new THREE.Color(color)}, uDash:{value:opts.dash||95}, uSpeed:{value:opts.speed||1}, uAlpha:{value:opts.alpha||0.85}, uTotal:{value:1}, uComet:{value:opts.comet?1:0}, uReveal:{value:1}},
     vertexShader:lineVS,
-    fragmentShader:`uniform float uTime,uDash,uSpeed,uAlpha,uTotal,uComet; uniform vec3 uColor; varying float vD;
+    fragmentShader:`uniform float uTime,uDash,uSpeed,uAlpha,uTotal,uComet,uReveal; uniform vec3 uColor; varying float vD;
       void main(){
+        if(vD/uTotal>uReveal+1e-4) discard;
         float f=fract(vD*uDash-uTime*uSpeed);
         float on=smoothstep(0.30,0.40,f)*(1.0-smoothstep(0.82,0.92,f));
         float glow=uComet*exp(-pow((vD/uTotal-fract(uTime*0.16))*12.0,2.0));
@@ -923,14 +941,20 @@ function withDist(pts){
   return {g,total:d[pts.length-1]||1};
 }
 const pastMat=()=>new THREE.ShaderMaterial({
-  uniforms:{uAlpha:{value:0.75}},
+  uniforms:{uAlpha:{value:0.75}, uReveal:{value:1}},
   vertexShader:`attribute float age; varying float vA; void main(){ vA=age; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-  fragmentShader:`uniform float uAlpha; varying float vA; void main(){ gl_FragColor=vec4(vec3(0.86,0.92,0.97),uAlpha*(0.1+0.9*vA*vA)); }`,
+  fragmentShader:`uniform float uAlpha,uReveal; varying float vA;
+    void main(){
+      if(vA>uReveal+1e-4) discard;
+      float k=uReveal<0.999?clamp(vA/max(uReveal,1e-3),0.0,1.0):vA;
+      float head=uReveal<0.999?exp(-pow((uReveal-vA)*40.0,2.0)):0.0;
+      gl_FragColor=vec4(vec3(0.86,0.92,0.97)+head*0.6,uAlpha*(0.1+0.9*k*k)+head*0.5);
+    }`,
   transparent:true, depthWrite:false
 });
 /* forecast cone: signed distance to a chain of tapered capsules, drawn on a patch of the sphere */
 const coneFS=`
-  uniform vec3 uPts[16]; uniform int uN; uniform float uTime;
+  uniform vec3 uPts[16]; uniform int uN; uniform float uTime,uReveal;
   varying vec2 vLL;
   void main(){
     float best=1e9, bestS=0.0, cl=cos(radians(vLL.x));
@@ -949,6 +973,7 @@ const coneFS=`
     float sweep=exp(-pow((bestS-fract(uTime*0.12))*7.0,2.0))*fill;
     vec3 col=vec3(0.95,0.77,0.53);
     float alpha=fill*(0.05+0.09*(1.0-inner))*(1.15-0.5*bestS)+edge*0.8+sweep*0.16;
+    alpha*=1.0-smoothstep(uReveal-0.02,uReveal+0.02,bestS);
     gl_FragColor=vec4(col*(1.0+sweep*0.6),alpha);
   }`;
 function buildCone(s){
@@ -972,7 +997,7 @@ function buildCone(s){
   const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(pos,3)); g.setAttribute('ll',new THREE.BufferAttribute(ll,2)); g.setIndex(idx);
   const arr=[]; for(let i=0;i<16;i++) arr.push(pts[Math.min(i,n-1)].clone());
   const m=new THREE.ShaderMaterial({
-    uniforms:{uPts:{value:arr}, uN:{value:n}, uTime:{value:0}},
+    uniforms:{uPts:{value:arr}, uN:{value:n}, uTime:{value:0}, uReveal:{value:1.2}},
     vertexShader:`attribute vec2 ll; varying vec2 vLL; void main(){ vLL=ll; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
     fragmentShader:coneFS, transparent:true, depthWrite:false, side:THREE.DoubleSide, extensions:{derivatives:true}
   });
@@ -1119,7 +1144,7 @@ function animateSat(c,dt){
   const u=st.mesh.material.uniforms, n=st.frames.length;
   st.fadeIn=Math.min(1,st.fadeIn+dt*0.8);
   const live=offsetH<0.5;
-  st.mesh.visible=swirlOn&&live&&c.vis;
+  st.mesh.visible=swirlOn&&live&&c.vis&&!(tour&&tour.c===c);
   u.uOpacity.value=st.fadeIn*0.97;
   u.uUp.value.copy(upLocal).applyMatrix3(rotM).normalize();
   if(n<2){ u.uA.value=u.uB.value=st.frames[0].tx; u.uMix.value=0; return; }
@@ -1200,7 +1225,11 @@ function buildStorms(data){
     if(cone) g.add(cone);
     g.add(pastLine,futLine,nodes); g.traverse(o=>o.renderOrder=2);
     trackGroup.add(g);
-    c.track={pastLine,futLine,cone};
+    c.track={pastLine,futLine,cone,nodes};
+    c.pastLL=s.past.concat(s.fc.length?[[s.fc[0].lat,s.fc[0].lon]]:[]);
+    if(c.pastLL.length<2&&c.pastLL.length) c.pastLL.push(c.pastLL[0]);
+    const dArr=fd.g.getAttribute('dist').array;
+    c.fcDist=s.fc.map((_,i)=>dArr[Math.min(i*16,dArr.length-1)]); c.futTotal=fd.total;
     // swirl
     const mat=new THREE.ShaderMaterial({uniforms:{time:{value:0}, dir:{value:1}, day:{value:1}, eye:{value:1}, seed:{value:1+c.i*2.7}, opacity:{value:0.95}, sunL:{value:new THREE.Vector3(0,0,1)}},
       vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
@@ -1237,7 +1266,14 @@ function updateStates(force){
     c.vis=!!st;
     c.swirl.visible=c.vis&&swirlOn&&!(c.sat&&offsetH<0.5);
     if(!st) continue;
+    if(tour&&tour.c===c){ c.vis=true; continue; }
     c.lat=st.lat; c.lon=st.lon; c.kt=st.kt; c.hpa=st.hpa; c.cat=st.cat;
+    placeSwirl(c);
+  }
+  refreshText();
+}
+function placeSwirl(c){
+  {
     ll2v(c.lat,c.lon,1,c.v);
     const n=c.v.clone().normalize();
     c.swirl.position.copy(n).multiplyScalar(1.009);
@@ -1247,7 +1283,6 @@ function updateStates(force){
     const size=2*rdeg*1.3*DEG*1.01; c.swirl.scale.set(size,size,1);
     const u=c.swirl.material.uniforms; u.dir.value=c.lat>=0?1:-1; u.eye.value=Math.min(1,Math.max(0,(k1-60)/55));
   }
-  refreshText();
 }
 
 /* ---------- text ---------- */
@@ -1264,7 +1299,7 @@ function refreshText(){
     c.li.querySelector('.st-v small').textContent='kt'+(c.hpa?' · '+Math.round(c.hpa)+' hPa':'');
     c.li.setAttribute('aria-current',selected===c?'true':'false');
     c.mk.querySelector('small').textContent=(bd.top==='CAT'?'CAT '+bd.lab:bd.lab)+(c.kt!=null?' · '+Math.round(c.kt)+' KT':'');
-    c.mk.classList.toggle('sel',selected===c);
+    c.mk.classList.toggle('sel',selected===c&&!(tour&&tour.c===c));
   }
   if(selected) fillDetail(selected);
 }
@@ -1322,7 +1357,7 @@ function fillDetail(c){
     return '<tr'+(near?' class="now"':'')+'><td>'+(i===0?'분석':fmtKst(p.ms))+'</td><td>'+fmtLat(p.lat)+' '+fmtLon(p.lon)+'</td><td>'+(p.kt!=null?Math.round(p.kt)+' kt':'–')+'</td><td>'+last+'</td></tr>';
   });
   document.getElementById('dFc').innerHTML=rows.join('');
-  const showR=tracksOn&&offsetH===0&&hasR;
+  const showR=tracksOn&&offsetH===0&&hasR&&!tour;
   if(showR&&s.galeKm){ buildRing(ring15,c.lat,c.lon,s.galeKm/111.2); ring15.visible=true; } else ring15.visible=false;
   if(showR&&s.stormKm){ buildRing(ring25,c.lat,c.lon,s.stormKm/111.2); ring25.visible=true; } else ring25.visible=false;
 }
@@ -1339,9 +1374,102 @@ function buildFcLabels(c){
     el.innerHTML='<i></i><b></b><small></small>';
     el.querySelector('b').textContent=fmtKst(p.ms).replace(' ',' · ');
     el.querySelector('small').textContent=(h>=0?'+':'')+h+'h'+(p.kt!=null?' · '+Math.round(p.kt)+' kt':(p.cat?' · '+p.cat:''));
-    fcWrap.appendChild(el); fcLabels.push({el, v:ll2v(p.lat,p.lon,1.006)});
+    fcWrap.appendChild(el); fcLabels.push({el, v:ll2v(p.lat,p.lon,1.006), ms:p.ms});
   }
 }
+
+/* ---------- track tour: genesis -> past track -> now -> forecast -> whole track ---------- */
+let tour=null;
+const capEl=document.getElementById('tourCap'), capMain=document.getElementById('tcMain'), capSub=document.getElementById('tcSub'), capBar=document.getElementById('tcBar');
+const easeIO=u=>u<0?0:u>1?1:u*u*(3-2*u);
+function lerpLL(a,b,t){ return [a[0]+(b[0]-a[0])*t, wrap(a[1]+wrap(b[1]-a[1])*t)]; }
+function startTour(c){
+  const P=c.pastLL||[], F=c.s.fc;
+  if(!P.length&&!F.length){ follow=true; aimAt(c); return; }
+  const Dp=Math.min(8,Math.max(3.2,P.length*0.09)), Df=F.length>1?Math.min(8,Math.max(3.5,(F.length-1)*1.3)):0;
+  tour={c, phase:'intro', t:0, Dp, Df, alt:W<=820?0.95:0.72, headMs:c.s.t0, total:1.6+Dp+1.3+Df+2.8, el:0};
+  setPlay(false); follow=false;
+  capEl.hidden=false;
+  c.track.nodes.visible=false;
+  if(tracksOn) ring15.visible=ring25.visible=false;
+}
+function endTour(cancelled){
+  if(!tour) return;
+  const c=tour.c; tour=null;
+  capEl.hidden=true;
+  c.track.pastLine.material.uniforms.uReveal.value=1;
+  c.track.futLine.material.uniforms.uReveal.value=1;
+  if(c.track.cone) c.track.cone.material.uniforms.uReveal.value=1.2;
+  c.track.nodes.visible=true;
+  hourEl.value='0'; setOffset(0);
+  if(cancelled){ tgtX=tgtY=null; follow=false; }
+  else{ follow=true; aimAt(c); altTarget=W<=820?1.05:0.92; }
+  refreshText();
+}
+function stepTour(dt){
+  if(!tour) return;
+  const T=tour, c=T.c, s=c.s, P=c.pastLL, F=s.fc;
+  T.t+=dt; T.el+=dt;
+  let ll=P.length?P[0]:[F[0].lat,F[0].lon], pr=0, fr=0, main='', sub='', kt=c.kt;
+  const next=ph=>{ T.phase=ph; T.t=0; };
+  if(T.phase==='intro'){
+    main='발생 지점'; sub=s.name+' · 처음 관측된 곳';
+    if(T.t>1.6) next(P.length>1?'past':'now');
+  }else if(T.phase==='past'){
+    const u=easeIO(T.t/T.Dp), x=u*(P.length-1), i=Math.min(P.length-2,Math.floor(x));
+    ll=lerpLL(P[i],P[i+1],x-i); pr=u;
+    main='지나온 경로'; sub=Math.round(u*100)+'% · 발생 지점에서 현재 위치까지';
+    if(T.t>=T.Dp) next('now');
+  }else if(T.phase==='now'){
+    ll=P.length?P[P.length-1]:[F[0].lat,F[0].lon]; pr=1;
+    main='현재 위치'; sub=fmtKst(s.t0,true)+' KST 분석'+(s.kt!=null?' · '+Math.round(s.kt)+' kt':'')+(s.hpa?' · '+Math.round(s.hpa)+' hPa':'');
+    kt=s.kt;
+    if(T.t>1.3) next(F.length>1?'fc':'outro');
+  }else if(T.phase==='fc'){
+    pr=1;
+    const u=Math.min(1,T.t/T.Df), ms=F[0].ms+u*(F[F.length-1].ms-F[0].ms);
+    let i=0; while(i<F.length-2&&F[i+1].ms<ms) i++;
+    const t=Math.min(1,Math.max(0,(ms-F[i].ms)/(F[i+1].ms-F[i].ms)));
+    const st=stateAt(s,ms)||F[F.length-1];
+    ll=[st.lat,st.lon]; kt=st.kt; T.headMs=ms;
+    fr=(c.fcDist[i]+t*(c.fcDist[i+1]-c.fcDist[i]))/Math.max(c.futTotal,1e-6);
+    if(c.track.cone) c.track.cone.material.uniforms.uReveal.value=(i+t)/Math.max(1,Math.min(F.length,16)-1);
+    const h=Math.round((ms-F[0].ms)/36e5);
+    main='예보 +'+h+'시간'; sub=fmtKst(ms,true)+' KST'+(kt!=null?' · '+Math.round(kt)+' kt':(st.cat?' · '+st.cat:''))+(st.hpa?' · '+Math.round(st.hpa)+' hPa':'');
+    const off=(ms-nowMs)/36e5; if(off>0.5){ hourEl.value=String(Math.round(off)); offsetH=off; document.getElementById('hr').innerHTML='+'+Math.round(off)+'h<small>예보</small>'; }
+    if(T.t>=T.Df) next('outro');
+  }else if(T.phase==='outro'){
+    pr=1; fr=1; const L=F.length?F[F.length-1]:{lat:ll[0],lon:ll[1]}; ll=[L.lat,L.lon]; kt=L.kt;
+    if(c.track.cone) c.track.cone.material.uniforms.uReveal.value=1.2;
+    main='전체 경로'; sub='지나온 길 '+(P.length>1?Math.round(pathKm(P))+' km':'')+(F.length>1?' · 예보 '+Math.round((F[F.length-1].ms-F[0].ms)/36e5)+'시간':'');
+    if(T.t>2.8){ endTour(false); return; }
+  }
+  // move the storm head
+  c.lat=ll[0]; c.lon=ll[1]; if(kt!=null) c.kt=kt;
+  placeSwirl(c);
+  c.track.pastLine.material.uniforms.uReveal.value=T.phase==='intro'?0:pr;
+  c.track.futLine.material.uniforms.uReveal.value=T.phase==='fc'||T.phase==='outro'?fr:0;
+  if(T.phase!=='fc'&&T.phase!=='outro'&&c.track.cone) c.track.cone.material.uniforms.uReveal.value=-0.1;
+  // camera
+  if(T.phase==='outro'){
+    const all=(P||[]).concat(F.map(p=>[p.lat,p.lon]));
+    const mid=new THREE.Vector3(); all.forEach(q=>mid.add(ll2v(q[0],q[1],1)));
+    mid.normalize();
+    const mLat=Math.asin(mid.y)/DEG, mLon=Math.atan2(-mid.z,mid.x)/DEG;
+    let maxKm=0; all.forEach(q=>{ maxKm=Math.max(maxKm,kmBetween([mLat,mLon],q)); });
+    tgtY=nearestAngle(-Math.PI/2-mLon*DEG,rotY); tgtX=Math.max(-1.2,Math.min(1.2,mLat*DEG));
+    altTarget=Math.min(fitAlt,Math.max(0.9,(maxKm/6371)/Math.tan(camera.fov*DEG/2)*1.25));
+  }else{
+    tgtY=nearestAngle(-Math.PI/2-ll[1]*DEG,rotY); tgtX=Math.max(-1.2,Math.min(1.2,ll[0]*DEG));
+    altTarget=T.alt;
+  }
+  capMain.textContent=main; capSub.textContent=sub;
+  capBar.style.width=Math.min(100,T.el/T.total*100).toFixed(1)+'%';
+  if(selected===c) c.mk.querySelector('small').textContent=(kt!=null?Math.round(kt)+' KT':'');
+}
+function pathKm(P){ let d=0; for(let i=1;i<P.length;i++) d+=kmBetween(P[i-1],P[i]); return d; }
+document.getElementById('tcSkip').addEventListener('click',()=>endTour(false));
+document.getElementById('dReplay').addEventListener('click',()=>{ if(selected){ if(tour) endTour(true); startTour(selected); } });
 
 /* ---------- camera / interaction ---------- */
 let rotX=0.38, rotY=-Math.PI/2-132*DEG, velX=0, velY=0, tgtX=null, tgtY=null, follow=false;
@@ -1370,8 +1498,9 @@ function select(c,quiet){
     o.track.pastLine.material.uniforms.uAlpha.value=on?0.75:0.25; o.track.futLine.material.uniforms.uAlpha.value=on?0.9:0.3;
     if(o.track.cone) o.track.cone.visible=!!c&&o===c;
   }
-  if(c){ loadSat(c,SMALL?5:7); if(!quiet){ follow=true; aimAt(c); altTarget=W<=820?1.05:0.92; } }
-  else{ follow=false; tgtX=0.35; tgtY=null; ring15.visible=ring25.visible=false; }
+  if(tour&&tour.c!==c) endTour(true);
+  if(c){ loadSat(c,SMALL?5:7); if(!quiet){ if(REDUCED){ follow=true; aimAt(c); altTarget=W<=820?1.05:0.92; } else startTour(c); } }
+  else{ if(tour) endTour(true); follow=false; tgtX=0.35; tgtY=null; ring15.visible=ring25.visible=false; }
   buildFcLabels(c);
   refreshText(); requestAnimationFrame(layout);
 }
@@ -1390,6 +1519,7 @@ canvas.addEventListener('pointermove',e=>{
   const dx=e.clientX-lastX, dy=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY;
   const k=1.25*alt/H; velY=dx*k; velX=dy*k; rotY+=velY; rotX=Math.max(-1.35,Math.min(1.35,rotX+velX)); idle=0;
 });
+canvas.addEventListener('pointerdown',()=>{ if(tour) endTour(true); });
 function endPtr(e){ pointers.delete(e.pointerId); if(pointers.size<2) pinchD=0; if(!pointers.size) canvas.classList.remove('drag'); }
 canvas.addEventListener('pointerup',endPtr); canvas.addEventListener('pointercancel',endPtr);
 canvas.addEventListener('wheel',e=>{ e.preventDefault(); altTarget=Math.max(MIN_ALT,Math.min(fitAlt*1.7,altTarget*Math.exp(e.deltaY*0.0016))); idle=0; },{passive:false});
@@ -1426,7 +1556,7 @@ function setOffset(h){
   document.getElementById('toast').hidden=live;
   if(selected) follow=true;
 }
-hourEl.addEventListener('input',()=>{ setPlay(false); setOffset(+hourEl.value); });
+hourEl.addEventListener('input',()=>{ if(tour) endTour(true); setPlay(false); setOffset(+hourEl.value); });
 playBtn.addEventListener('click',()=>{ if(!playing&&offsetH>=120){ hourEl.value='0'; setOffset(0); } setPlay(!playing); });
 document.getElementById('nowBtn').addEventListener('click',()=>{ setPlay(false); hourEl.value='0'; setOffset(0); });
 
@@ -1475,7 +1605,8 @@ function frame(now){
   const ss=subsolar(nowMs+offsetH*3600e3); ll2v(ss.lat,ss.lon,1,sunLocal);
   if(sec%5===0) document.getElementById('tSun').textContent=fmtLat(ss.lat)+' '+fmtLon(ss.lon);
 
-  if(follow&&selected&&selected.vis) aimAt(selected);
+  stepTour(dt);
+  if(!tour&&follow&&selected&&selected.vis) aimAt(selected);
   const e=1-Math.exp(-dt*(REDUCED?12:3.2));
   if(tgtY!==null) rotY+=(tgtY-rotY)*e;
   if(tgtX!==null) rotX+=(tgtX-rotX)*e;
@@ -1512,7 +1643,8 @@ function frame(now){
     const sx=(tmpV.x+1)/2*W, sy=(1-tmpV.y)/2*H;
     const clear=placed.every(q=>Math.abs(q[0]-sx)>120||Math.abs(q[1]-sy)>30);
     l.el.style.transform='translate('+sx.toFixed(1)+'px,'+sy.toFixed(1)+'px)';
-    const op=showFc&&clear&&f>0.2?Math.min(1,(f-0.2)*4*Math.min(1,Math.max(0,(2.2-alt)/1.0))):0;
+    const reached=!tour||(tour.phase==='fc'&&l.ms<=tour.headMs+1)||tour.phase==='outro';
+    const op=showFc&&clear&&reached&&f>0.2?Math.min(1,(f-0.2)*4*Math.min(1,Math.max(0,(2.2-alt)/1.0))):0;
     l.el.style.opacity=op.toFixed(2);
     if(op>0.05) placed.push([sx,sy]);
   }
@@ -1520,7 +1652,7 @@ function frame(now){
   for(const c of storms){
     if(!c.vis){ c.mk.style.opacity='0'; c.mk.style.pointerEvents='none'; c.mk.tabIndex=-1; continue; }
     animateSat(c,dt);
-    c.swirl.visible=c.vis&&swirlOn&&!(c.sat&&offsetH<0.5&&c.sat.fadeIn>0.6);
+    c.swirl.visible=c.vis&&swirlOn&&((tour&&tour.c===c)||!(c.sat&&offsetH<0.5&&c.sat.fadeIn>0.6));
     const u=c.swirl.material.uniforms; u.time.value=clock; u.opacity.value=0.95*(0.45+0.55*Math.min(1,Math.max(0,(alt-0.05)/0.4)));
     u.sunL.value.copy(sunLocal).applyQuaternion(tmpQ.copy(c.swirl.quaternion).invert());
     tmpN.copy(c.v).applyMatrix3(rotM).normalize();
