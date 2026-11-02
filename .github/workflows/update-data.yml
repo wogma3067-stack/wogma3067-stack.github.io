@@ -1,4 +1,4 @@
-name: Update live data
+name: Update live data and deploy
 
 on:
   schedule:
@@ -6,12 +6,11 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - "scripts/**"
-      - ".github/workflows/update-data.yml"
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: update-data
@@ -56,3 +55,25 @@ jobs:
             git commit --quiet -m "Update live data"
             git push origin HEAD:main
           fi
+
+  # Publishes the site (with the fresh data) to GitHub Pages.
+  # Requires Settings > Pages > Build and deployment > Source = "GitHub Actions".
+  deploy:
+    needs: update
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
