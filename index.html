@@ -703,17 +703,31 @@ let stateTex=initTex, sw=0, tw=0;
 
 let windTex=null, windMeta=null;
 const simMat=new THREE.ShaderMaterial({
-  uniforms:{uState:{value:initTex}, uWind:{value:null}, uSeed:{value:0}, uKd:{value:0.0058}, uDt:{value:1}, uDrop:{value:0.004}, uDropBump:{value:0.012}, uWmax:{value:40}, uLocal:{value:0}, uWin:{value:new THREE.Vector4(0,0,1,1)}, uReseed:{value:0}},
+  uniforms:{uState:{value:initTex}, uWind:{value:null}, uSeed:{value:0}, uKd:{value:0.0058}, uDt:{value:1}, uDrop:{value:0.004}, uDropBump:{value:0.012}, uWmax:{value:40}, uLocal:{value:0}, uWin:{value:new THREE.Vector4(0,0,1,1)}, uReseed:{value:0}, uVortOn:{value:0}, uDir:{value:1}, uVort:{value:new THREE.Vector4(0,0,5,40)}},
   vertexShader:quadVS,
   fragmentShader:`
     uniform sampler2D uState, uWind; uniform float uSeed,uKd,uDt,uDrop,uDropBump,uWmax,uLocal,uReseed; uniform vec4 uWin;
     varying vec2 vUv;
     const vec3 RC=vec3(12.9898,78.233,4375.85453);
     float rand(vec2 co){ float t=dot(RC.xy,co); return fract(sin(t)*(RC.z+t)); }
+    // tour vortex: a moving low that drags nearby particles into a spiral and swallows them at the core
+    uniform float uVortOn, uDir; uniform vec4 uVort;
+    vec3 vortex(vec2 p){
+      float clat=max(cos((p.y-0.5)*3.14159265),0.06);
+      float dxn=p.x-uVort.x; dxn-=floor(dxn+0.5);
+      vec2 d=vec2(dxn*360.0*clat,(p.y-uVort.y)*180.0);
+      float r=length(d)+1e-4, R=uVort.z, rm=R*0.13;
+      float vt=uVort.w*(r<rm?r/rm:pow(rm/r,0.5))*exp(-pow(r/(R*1.7),2.0));
+      float vin=vt*0.85*smoothstep(rm*0.5,rm*2.2,r)+uVort.w*0.12*exp(-pow(r/(R*1.2),2.0));
+      vec2 e=d/r, t=vec2(-e.y,e.x)*uDir;
+      return vec3(t*vt-e*vin, r/rm);
+    }
     void main(){
       vec4 c=texture2D(uState,vUv);
       vec2 pos=vec2(c.r/255.0+c.b, c.g/255.0+c.a);
       vec2 w=(texture2D(uWind,pos).rg*2.0-1.0)*uWmax;
+      float core=99.0;
+      if(uVortOn>0.5){ vec3 v=vortex(pos); w=w*mix(0.35,1.0,smoothstep(1.5,9.0,v.z))+v.xy; core=v.z; }
       float cl=max(cos((pos.y-0.5)*3.14159265),0.06);
       vec2 d=vec2(w.x/(cl*360.0), w.y/180.0)*uKd*uDt;
       pos=vec2(fract(pos.x+d.x+1.0), pos.y+d.y);
@@ -722,8 +736,14 @@ const simMat=new THREE.ShaderMaterial({
       float drop=step(1.0-uDrop-spd*uDropBump, rand(sd));
       if(pos.y<0.025||pos.y>0.975) drop=1.0;
       if(uReseed>0.5) drop=1.0;
+      if(core<0.45) drop=1.0;
       vec2 r=vec2(rand(sd+1.3), rand(sd+2.1));
-      if(uLocal>0.5){
+      if(uVortOn>0.5&&rand(sd+3.7)<0.3){
+        // feed the storm: respawn on a ring around the moving centre
+        float a=r.x*6.2831853, rr=uVort.z*(0.9+1.1*sqrt(r.y));
+        float clat=max(cos((uVort.y-0.5)*3.14159265),0.1);
+        r=vec2(fract(uVort.x+cos(a)*rr/(360.0*clat)+1.0), clamp(uVort.y+sin(a)*rr/180.0,0.03,0.97));
+      } else if(uLocal>0.5){
         vec2 lp=vec2(fract(pos.x-uWin.x), pos.y-uWin.y)/uWin.zw;
         if(lp.x>1.0||lp.y<0.0||lp.y>1.0) drop=1.0;
         r=vec2(fract(uWin.x+r.x*uWin.z), uWin.y+r.y*uWin.w);
@@ -751,11 +771,23 @@ const linePos=new Float32Array(NPART*6);
 for(let i=0;i<NPART;i++){ linePos[i*6]=i; linePos[i*6+3]=i; linePos[i*6+4]=1; }
 const lineGeo=new THREE.BufferGeometry(); lineGeo.setAttribute('position',new THREE.BufferAttribute(linePos,3));
 const lineMat=new THREE.ShaderMaterial({
-  uniforms:{uPrev:{value:initTex}, uNext:{value:initTex}, uWind:{value:null}, uRes:{value:S}, uWmax:{value:40}, uBright:{value:0.5}, uLocal:{value:0}, uWin:{value:simMat.uniforms.uWin.value}},
+  uniforms:{uPrev:{value:initTex}, uNext:{value:initTex}, uWind:{value:null}, uRes:{value:S}, uWmax:{value:40}, uBright:{value:0.5}, uLocal:{value:0}, uWin:{value:simMat.uniforms.uWin.value}, uVortOn:simMat.uniforms.uVortOn, uDir:simMat.uniforms.uDir, uVort:simMat.uniforms.uVort},
   vertexShader:`
     uniform sampler2D uPrev,uNext,uWind; uniform float uRes,uWmax,uLocal; uniform vec4 uWin;
     varying float vSpeed; varying float vAlpha;
     vec2 toTarget(vec2 p){ return uLocal>0.5 ? vec2(fract(p.x-uWin.x),p.y-uWin.y)/uWin.zw : p; }
+    // tour vortex: a moving low that drags nearby particles into a spiral and swallows them at the core
+    uniform float uVortOn, uDir; uniform vec4 uVort;
+    vec3 vortex(vec2 p){
+      float clat=max(cos((p.y-0.5)*3.14159265),0.06);
+      float dxn=p.x-uVort.x; dxn-=floor(dxn+0.5);
+      vec2 d=vec2(dxn*360.0*clat,(p.y-uVort.y)*180.0);
+      float r=length(d)+1e-4, R=uVort.z, rm=R*0.13;
+      float vt=uVort.w*(r<rm?r/rm:pow(rm/r,0.5))*exp(-pow(r/(R*1.7),2.0));
+      float vin=vt*0.85*smoothstep(rm*0.5,rm*2.2,r)+uVort.w*0.12*exp(-pow(r/(R*1.2),2.0));
+      vec2 e=d/r, t=vec2(-e.y,e.x)*uDir;
+      return vec3(t*vt-e*vin, r/rm);
+    }
     void main(){
       float idx=position.x;
       vec2 uv=vec2(mod(idx,uRes)+0.5, floor(idx/uRes)+0.5)/uRes;
@@ -765,7 +797,9 @@ const lineMat=new THREE.ShaderMaterial({
       float lim=uLocal>0.5?0.06:0.02;
       vAlpha=(dd.x>lim||dd.y>lim)?0.0:1.0;
       vec2 q=(position.y<0.5&&vAlpha>0.5)?qa:qb;
-      vSpeed=length((texture2D(uWind,pb).rg*2.0-1.0)*uWmax);
+      vec2 wv=(texture2D(uWind,pb).rg*2.0-1.0)*uWmax;
+      if(uVortOn>0.5){ vec3 v=vortex(pb); wv=wv*mix(0.35,1.0,smoothstep(1.5,9.0,v.z))+v.xy; }
+      vSpeed=length(wv);
       gl_Position=vec4(q*2.0-1.0,0.0,1.0);
     }`,
   fragmentShader:`
@@ -811,8 +845,25 @@ document.getElementById('tTracers').textContent=NPART.toLocaleString('en-US');
 /* switch between the global trail map and a high-resolution regional one around the view */
 function clearRT(rt){ renderer.setRenderTarget(rt); renderer.clear(); }
 function updateWindRegion(){
-  const wantLocal=alt<1.15&&!tour;
-  if(!wantLocal){
+  if(tour){
+    if(!tour.winSet){
+      tour.winSet=true;
+      const pts=(tour.c.pastLL||[]).concat(tour.c.s.fc.map(p=>[p.lat,p.lon]));
+      const lon0=pts[0][1];
+      let la0=90,la1=-90,lo0=1e9,lo1=-1e9;
+      for(const q of pts){ const lo=lon0+wrap(q[1]-lon0); la0=Math.min(la0,q[0]); la1=Math.max(la1,q[0]); lo0=Math.min(lo0,lo); lo1=Math.max(lo1,lo); }
+      const m=tour.R*2.2+4;
+      la0=Math.max(-85,la0-m); la1=Math.min(85,la1+m); lo0-=m/Math.max(Math.cos(((la0+la1)/2)*DEG),0.3); lo1+=m/Math.max(Math.cos(((la0+la1)/2)*DEG),0.3);
+      const sLat=Math.min(110,la1-la0), sLon=Math.min(300,lo1-lo0);
+      win={lat:(la0+la1)/2, lon:wrap((lo0+lo1)/2), sLat, sLon};
+      simMat.uniforms.uWin.value.set((((lo0+180)/360)%1+1)%1,(la0+90)/180,sLon/360,sLat/180);
+      simMat.uniforms.uReseed.value=1; trailL.forEach(clearRT); renderer.setRenderTarget(null);
+      localMode=true;
+    }
+  }
+  const wantLocal=alt<1.15;
+  if(tour){}
+  else if(!wantLocal){
     if(localMode){ localMode=false; simMat.uniforms.uReseed.value=1; trailRT.forEach(clearRT); renderer.setRenderTarget(null); }
   }else{
     const sLat=Math.min(70,Math.max(1.0,viewCap*2.3));
@@ -828,9 +879,9 @@ function updateWindRegion(){
   }
   const on=localMode?1:0;
   simMat.uniforms.uLocal.value=lineMat.uniforms.uLocal.value=windSphereMat.uniforms.uLocal.value=on;
-  simMat.uniforms.uKd.value=localMode?0.0058*Math.min(1,Math.max(0.06,win.sLat/28)):0.0058;
-  lineMat.uniforms.uBright.value=localMode?0.4:0.5;
-  lineGeo.setDrawRange(0,(localMode?Math.min(NPART,SMALL?16000:42000):NPART)*2);
+  simMat.uniforms.uKd.value=tour?0.0058:localMode?0.0058*Math.min(1,Math.max(0.06,win.sLat/28)):0.0058;
+  lineMat.uniforms.uBright.value=tour?0.3:localMode?0.4:0.5;
+  lineGeo.setDrawRange(0,(tour?Math.min(NPART,SMALL?18000:50000):localMode?Math.min(NPART,SMALL?16000:42000):NPART)*2);
 }
 function stepWind(dt){
   if(!windTex) return;
@@ -1264,7 +1315,7 @@ function updateStates(force){
   for(const c of storms){
     const st=stateAt(c.s,ms);
     c.vis=!!st;
-    c.swirl.visible=c.vis&&swirlOn&&!(c.sat&&offsetH<0.5);
+    c.swirl.visible=false;
     if(!st) continue;
     if(tour&&tour.c===c){ c.vis=true; continue; }
     c.lat=st.lat; c.lon=st.lon; c.kt=st.kt; c.hpa=st.hpa; c.cat=st.cat;
@@ -1339,7 +1390,7 @@ function fillDetail(c){
   if(s.issued) info.push(['발표 시각',fmtKst(Date.parse(s.issued))+' KST']);
   if(s.alert) info.push(['GDACS 경보',{Red:'적색',Orange:'주황',Green:'녹색'}[s.alert]||s.alert]);
   if(c.sat) info.push(['구름 영상',c.sat.sat.ko+' 적외 · '+fmtKst(c.sat.latest)+(c.sat.frames.length>1?' 까지 '+Math.round((c.sat.frames.length-1)*20/60*10)/10+'시간':'')]);
-  else if(!pickSat(c.lat,c.lon)) info.push(['구름 영상','정지위성 범위 밖 · 효과로 표시']);
+  else if(!pickSat(c.lat,c.lon)) info.push(['구름 영상','정지위성 범위 밖']);
   document.getElementById('dInfo').innerHTML=info.map(r=>'<dt>'+r[0]+'</dt><dd></dd>').join('');
   document.querySelectorAll('#dInfo dd').forEach((dd,i)=>dd.textContent=info[i][1]);
   const hasR=!!(s.galeKm||s.stormKm);
@@ -1387,7 +1438,8 @@ function startTour(c){
   const P=c.pastLL||[], F=c.s.fc;
   if(!P.length&&!F.length){ follow=true; aimAt(c); return; }
   const Dp=Math.min(8,Math.max(3.2,P.length*0.09)), Df=F.length>1?Math.min(8,Math.max(3.5,(F.length-1)*1.3)):0;
-  tour={c, phase:'intro', t:0, Dp, Df, alt:W<=820?0.95:0.72, headMs:c.s.t0, total:1.6+Dp+1.3+Df+2.8, el:0};
+  const R=Math.max(4,Math.min(9,((c.s.galeKm||0)>0?c.s.galeKm*1.5:300+(est1min(c.s,c.s.kt)||50)*3)/111.2));
+  tour={c, phase:'intro', t:0, Dp, Df, alt:W<=820?1.1:0.85, headMs:c.s.t0, total:1.6+Dp+1.3+Df+2.8, el:0, R, k:0};
   setPlay(false); follow=false;
   capEl.hidden=false;
   c.track.nodes.visible=false;
@@ -1397,6 +1449,7 @@ function endTour(cancelled){
   if(!tour) return;
   const c=tour.c; tour=null;
   capEl.hidden=true;
+  simMat.uniforms.uVortOn.value=0; win={lat:999,lon:0,sLat:1,sLon:1};
   c.track.pastLine.material.uniforms.uReveal.value=1;
   c.track.futLine.material.uniforms.uReveal.value=1;
   if(c.track.cone) c.track.cone.material.uniforms.uReveal.value=1.2;
@@ -1444,9 +1497,14 @@ function stepTour(dt){
     main='전체 경로'; sub='지나온 길 '+(P.length>1?Math.round(pathKm(P))+' km':'')+(F.length>1?' · 예보 '+Math.round((F[F.length-1].ms-F[0].ms)/36e5)+'시간':'');
     if(T.t>2.8){ endTour(false); return; }
   }
-  // move the storm head
+  // move the storm head and the particle vortex with it
   c.lat=ll[0]; c.lon=ll[1]; if(kt!=null) c.kt=kt;
   placeSwirl(c);
+  T.k=Math.min(1,T.k+dt*0.6);
+  const k1=est1min(s,kt!=null?kt:s.kt)||50;
+  const strength=(18+Math.min(42,k1*0.32))*(T.phase==='outro'?Math.max(0,1-T.t/2.8):easeIO(T.k));
+  simMat.uniforms.uVortOn.value=1; simMat.uniforms.uDir.value=ll[0]>=0?1:-1;
+  simMat.uniforms.uVort.value.set((ll[1]+180)/360,(ll[0]+90)/180,T.R,strength);
   c.track.pastLine.material.uniforms.uReveal.value=T.phase==='intro'?0:pr;
   c.track.futLine.material.uniforms.uReveal.value=T.phase==='fc'||T.phase==='outro'?fr:0;
   if(T.phase!=='fc'&&T.phase!=='outro'&&c.track.cone) c.track.cone.material.uniforms.uReveal.value=-0.1;
@@ -1540,7 +1598,7 @@ document.querySelectorAll('.tg').forEach(b=>b.addEventListener('click',()=>{
   if(L==='wind'){ windOn=on; windSphere.visible=on; }
   if(L==='clouds'){ clouds.visible=on; earthMat.uniforms.cloudsOn.value=on?1:0; }
   if(L==='tracks'){ tracksOn=on; trackGroup.visible=on; if(!on) ring15.visible=ring25.visible=false; else if(selected) fillDetail(selected); }
-  if(L==='swirl'){ swirlOn=on; storms.forEach(c=>c.swirl.visible=on&&c.vis&&!(c.sat&&offsetH<0.5)); }
+  if(L==='swirl'){ swirlOn=on; }
   if(L==='lights'){ earthMat.uniforms.lightsOn.value=on?1:0; }
 }));
 
@@ -1652,7 +1710,7 @@ function frame(now){
   for(const c of storms){
     if(!c.vis){ c.mk.style.opacity='0'; c.mk.style.pointerEvents='none'; c.mk.tabIndex=-1; continue; }
     animateSat(c,dt);
-    c.swirl.visible=c.vis&&swirlOn&&((tour&&tour.c===c)||!(c.sat&&offsetH<0.5&&c.sat.fadeIn>0.6));
+    c.swirl.visible=false;
     const u=c.swirl.material.uniforms; u.time.value=clock; u.opacity.value=0.95*(0.45+0.55*Math.min(1,Math.max(0,(alt-0.05)/0.4)));
     u.sunL.value.copy(sunLocal).applyQuaternion(tmpQ.copy(c.swirl.quaternion).invert());
     tmpN.copy(c.v).applyMatrix3(rotM).normalize();
