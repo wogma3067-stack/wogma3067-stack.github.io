@@ -1,0 +1,58 @@
+name: Update live data
+
+on:
+  schedule:
+    - cron: "23 * * * *"   # every hour; GFS updates every 3 h, JMA every 3 h, JTWC every 6 h
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - ".github/workflows/update-data.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install decoders
+        run: pip install --quiet eccodes numpy pillow
+
+      - name: Fetch wind and storms
+        run: python scripts/update_data.py
+
+      - name: Commit changed data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "No data changes."
+            exit 0
+          fi
+          # Keep the repository small: when the previous commit is also an automated
+          # data refresh, fold this refresh into it instead of stacking hourly commits.
+          if [ "$(git log -1 --format=%s)" = "Update live data" ] && \
+             [ "$(git log -1 --format=%an)" = "github-actions[bot]" ]; then
+            git reset --soft HEAD~1
+            git commit --quiet -m "Update live data"
+            git push --force-with-lease origin HEAD:main
+          else
+            git commit --quiet -m "Update live data"
+            git push origin HEAD:main
+          fi
