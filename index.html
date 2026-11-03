@@ -329,7 +329,7 @@ a{color:var(--ice)}
     <button class="tc-skip" id="tcSkip" type="button">건너뛰기</button>
     <i class="tc-bar" id="tcBar"></i>
   </div>
-  <div class="toast panel" id="toast" hidden>예보 시각 보기 중 · 바람과 구름은 현재 자료입니다</div>
+  <div class="toast panel" id="toast" hidden>예보 시각 보기 중 · 바람은 GFS 예보, 구름은 현재 위성 영상입니다</div>
   <p class="hint">드래그 회전 · 스크롤 확대 · 태풍을 누르면 소용돌이로 이동</p>
 
   <footer class="timebar panel">
@@ -703,10 +703,10 @@ let stateTex=initTex, sw=0, tw=0;
 
 let windTex=null, windMeta=null;
 const simMat=new THREE.ShaderMaterial({
-  uniforms:{uState:{value:initTex}, uWind:{value:null}, uSeed:{value:0}, uKd:{value:0.0058}, uDt:{value:1}, uDrop:{value:0.004}, uDropBump:{value:0.012}, uWmax:{value:40}, uLocal:{value:0}, uWin:{value:new THREE.Vector4(0,0,1,1)}, uReseed:{value:0}, uVortOn:{value:0}, uDir:{value:1}, uVort:{value:new THREE.Vector4(0,0,5,40)}, uVel:{value:new THREE.Vector2(0,0)}},
+  uniforms:{uState:{value:initTex}, uWind:{value:null}, uWindB:{value:null}, uMix:{value:0}, uSeed:{value:0}, uKd:{value:0.0058}, uDt:{value:1}, uDrop:{value:0.004}, uDropBump:{value:0.012}, uWmax:{value:40}, uLocal:{value:0}, uWin:{value:new THREE.Vector4(0,0,1,1)}, uReseed:{value:0}, uVortOn:{value:0}, uDir:{value:1}, uVort:{value:new THREE.Vector4(0,0,5,40)}, uVel:{value:new THREE.Vector2(0,0)}},
   vertexShader:quadVS,
   fragmentShader:`
-    uniform sampler2D uState, uWind; uniform float uSeed,uKd,uDt,uDrop,uDropBump,uWmax,uLocal,uReseed; uniform vec4 uWin;
+    uniform sampler2D uState, uWind, uWindB; uniform float uMix, uSeed,uKd,uDt,uDrop,uDropBump,uWmax,uLocal,uReseed; uniform vec4 uWin;
     varying vec2 vUv;
     const vec3 RC=vec3(12.9898,78.233,4375.85453);
     float rand(vec2 co){ float t=dot(RC.xy,co); return fract(sin(t)*(RC.z+t)); }
@@ -725,7 +725,7 @@ const simMat=new THREE.ShaderMaterial({
     void main(){
       vec4 c=texture2D(uState,vUv);
       vec2 pos=vec2(c.r/255.0+c.b, c.g/255.0+c.a);
-      vec2 w=(texture2D(uWind,pos).rg*2.0-1.0)*uWmax;
+      vec2 w=(mix(texture2D(uWind,pos).rg,texture2D(uWindB,pos).rg,uMix)*2.0-1.0)*uWmax;
       float core=99.0;
       if(uVortOn>0.5){ vec3 v=vortex(pos); w=w*mix(0.35,1.0,smoothstep(1.5,9.0,v.z))+v.xy; core=v.z; }
       float cl=max(cos((pos.y-0.5)*3.14159265),0.06);
@@ -771,9 +771,9 @@ const linePos=new Float32Array(NPART*6);
 for(let i=0;i<NPART;i++){ linePos[i*6]=i; linePos[i*6+3]=i; linePos[i*6+4]=1; }
 const lineGeo=new THREE.BufferGeometry(); lineGeo.setAttribute('position',new THREE.BufferAttribute(linePos,3));
 const lineMat=new THREE.ShaderMaterial({
-  uniforms:{uPrev:{value:initTex}, uNext:{value:initTex}, uWind:{value:null}, uRes:{value:S}, uWmax:{value:40}, uBright:{value:0.5}, uLocal:{value:0}, uWin:{value:simMat.uniforms.uWin.value}, uVortOn:simMat.uniforms.uVortOn, uDir:simMat.uniforms.uDir, uVort:simMat.uniforms.uVort, uVel:simMat.uniforms.uVel},
+  uniforms:{uPrev:{value:initTex}, uNext:{value:initTex}, uWind:simMat.uniforms.uWind, uWindB:simMat.uniforms.uWindB, uMix:simMat.uniforms.uMix, uRes:{value:S}, uWmax:{value:40}, uBright:{value:0.5}, uLocal:{value:0}, uWin:{value:simMat.uniforms.uWin.value}, uVortOn:simMat.uniforms.uVortOn, uDir:simMat.uniforms.uDir, uVort:simMat.uniforms.uVort, uVel:simMat.uniforms.uVel},
   vertexShader:`
-    uniform sampler2D uPrev,uNext,uWind; uniform float uRes,uWmax,uLocal; uniform vec4 uWin;
+    uniform sampler2D uPrev,uNext,uWind,uWindB; uniform float uMix,uRes,uWmax,uLocal; uniform vec4 uWin;
     varying float vSpeed; varying float vAlpha;
     vec2 toTarget(vec2 p){ return uLocal>0.5 ? vec2(fract(p.x-uWin.x),p.y-uWin.y)/uWin.zw : p; }
     // tour vortex: a moving low that drags nearby particles into a spiral and swallows them at the core
@@ -797,7 +797,7 @@ const lineMat=new THREE.ShaderMaterial({
       float lim=uLocal>0.5?0.06:0.02;
       vAlpha=(dd.x>lim||dd.y>lim)?0.0:1.0;
       vec2 q=(position.y<0.5&&vAlpha>0.5)?qa:qb;
-      vec2 wv=(texture2D(uWind,pb).rg*2.0-1.0)*uWmax;
+      vec2 wv=(mix(texture2D(uWind,pb).rg,texture2D(uWindB,pb).rg,uMix)*2.0-1.0)*uWmax;
       if(uVortOn>0.5){ vec3 v=vortex(pb); wv=wv*mix(0.35,1.0,smoothstep(1.5,9.0,v.z))+v.xy; }
       vSpeed=length(wv);
       gl_Position=vec4(q*2.0-1.0,0.0,1.0);
@@ -884,6 +884,7 @@ function updateWindRegion(){
   lineGeo.setDrawRange(0,(tour?Math.min(NPART,SMALL?18000:50000):localMode?Math.min(NPART,SMALL?16000:42000):NPART)*2);
 }
 function stepWind(dt){
+  updateWindTime(false);
   if(!windTex) return;
   updateWindRegion();
   simMat.uniforms.uState.value=stateTex;
@@ -1638,6 +1639,34 @@ document.getElementById('nowBtn').addEventListener('click',()=>{ setPlay(false);
 /* ---------- live data ---------- */
 let stormStamp='', windStamp='';
 async function getJSON(url){ const r=await fetch(url+'?t='+Date.now(),{cache:'no-store'}); if(!r.ok) throw new Error(r.status); return r.json(); }
+/* GFS forecast frames: load lazily, blend the two around the displayed time */
+let windFrames=[], windShownMs=0;
+function loadWindFrame(f){
+  if(f.tex||f.loading) return;
+  f.loading=true;
+  loader.load(f.url, t=>{
+    t.minFilter=t.magFilter=THREE.LinearFilter; t.generateMipmaps=false;
+    t.wrapS=t.wrapT=THREE.ClampToEdgeWrapping;
+    f.tex=t; f.loading=false; updateWindTime(true);
+  }, undefined, ()=>{ f.loading=false; f.failed=true; });
+}
+function updateWindTime(force){
+  if(!windFrames.length) return;
+  const ms=nowMs+offsetH*3600e3;
+  if(!force&&Math.abs(ms-windShownMs)<60e3) return;
+  windShownMs=ms;
+  let i=0; while(i<windFrames.length-2&&windFrames[i+1].ms<=ms) i++;
+  const a=windFrames[i], b=windFrames[Math.min(i+1,windFrames.length-1)];
+  // keep the bracketing frames and the next ones ready, so playback never waits
+  [a,b,windFrames[i+2],windFrames[i+3]].forEach(f=>{ if(f&&!f.failed) loadWindFrame(f); });
+  let A=a.tex, B=b.tex, t=b.ms>a.ms?Math.min(1,Math.max(0,(ms-a.ms)/(b.ms-a.ms))):0;
+  if(!A&&B){ A=B; t=0; } if(!B&&A){ B=A; t=0; }
+  if(!A){ const any=windFrames.find(f=>f.tex); if(!any) return; A=B=any.tex; t=0; }
+  simMat.uniforms.uWind.value=A; simMat.uniforms.uWindB.value=B; simMat.uniforms.uMix.value=t;
+  windTex=A;
+  const shown=t<0.5?a:b, fc=offsetH>0.5;
+  document.getElementById('tWind').textContent='GFS · '+fmtKst(shown.ms)+(fc?' 예보':' 기준');
+}
 async function refreshData(){
   try{
     const d=await getJSON('data/storms.json');
@@ -1646,15 +1675,14 @@ async function refreshData(){
   }catch(e){ document.getElementById('tStorm').textContent='자료를 불러오지 못함'; }
   try{
     const m=await getJSON('data/wind.json');
-    if(m.valid!==windStamp){
-      loader.load('data/wind.png?v='+encodeURIComponent(m.valid), t=>{
-        t.minFilter=t.magFilter=THREE.LinearFilter; t.generateMipmaps=false;
-        t.wrapS=t.wrapT=THREE.ClampToEdgeWrapping;
-        windTex=t; windMeta=m; windStamp=m.valid;
-        simMat.uniforms.uWind.value=t; lineMat.uniforms.uWind.value=t;
-        simMat.uniforms.uWmax.value=lineMat.uniforms.uWmax.value=m.wmax;
-        document.getElementById('tWind').textContent='GFS · '+fmtKst(Date.parse(m.valid))+' 기준';
-      });
+    const stamp=m.cycle+'|'+m.valid;
+    if(stamp!==windStamp){
+      windStamp=stamp; windMeta=m;
+      simMat.uniforms.uWmax.value=lineMat.uniforms.uWmax.value=m.wmax;
+      windFrames.forEach(f=>{ if(f.tex) f.tex.dispose(); });
+      const list=(m.frames&&m.frames.length)?m.frames:[{file:'wind.png',valid:m.valid}];
+      windFrames=list.map(f=>({url:'data/'+f.file+'?c='+encodeURIComponent(m.cycle||m.valid), ms:Date.parse(f.valid), tex:null, loading:false}));
+      updateWindTime(true);
     }
   }catch(e){ document.getElementById('tWind').textContent='자료를 불러오지 못함'; }
 }

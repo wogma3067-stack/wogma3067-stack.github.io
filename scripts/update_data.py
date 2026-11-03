@@ -69,75 +69,131 @@ def write_if_changed(name, obj, stamp_key="updated"):
 
 
 # --------------------------------------------------------------------------- wind
-def fetch_wind(now):
+FRAME_STEP = 6     # hours between forecast wind frames
+FRAME_MAX = 132    # last forecast hour fetched (covers +120 h from "now" even late in a cycle)
+
+
+def gfs_url(cyc, fh):
+    return (
+        "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p50.pl"
+        f"?dir=%2Fgfs.{cyc:%Y%m%d}%2F{cyc:%H}%2Fatmos"
+        f"&file=gfs.t{cyc:%H}z.pgrb2full.0p50.f{fh:03d}"
+        "&var_UGRD=on&var_VGRD=on&lev_10_m_above_ground=on"
+    )
+
+
+def decode_uv(data):
     import numpy as np
     import eccodes
+    fields = {}
+    with tempfile.NamedTemporaryFile(suffix=".grb2") as tmp:
+        tmp.write(data)
+        tmp.flush()
+        with open(tmp.name, "rb") as f:
+            while True:
+                g = eccodes.codes_grib_new_from_file(f)
+                if g is None:
+                    break
+                try:
+                    name = eccodes.codes_get(g, "shortName")
+                    ni = eccodes.codes_get(g, "Ni")
+                    nj = eccodes.codes_get(g, "Nj")
+                    fields[name] = eccodes.codes_get_values(g).reshape(nj, ni)
+                finally:
+                    eccodes.codes_release(g)
+    if "10u" not in fields or "10v" not in fields:
+        return None
+    u, v = fields["10u"], fields["10v"]
+    ni = u.shape[1]
+    # GRIB rows run 90N -> 90S and columns 0E -> 359.5E; shift so column 0 is 180W,
+    # matching the equirectangular Earth textures (top row = north).
+    return np.roll(u, -ni // 2, axis=1), np.roll(v, -ni // 2, axis=1)
+
+
+def save_uv(u, v, path):
+    import numpy as np
     from PIL import Image
+    enc = lambda a: np.clip(np.rint((a + WMAX) / (2 * WMAX) * 255.0), 0, 255).astype("uint8")
+    rgb = np.dstack([enc(u), enc(v), np.zeros(u.shape, dtype="uint8")])
+    Image.fromarray(rgb, "RGB").save(path, optimize=True)
+
+
+def fetch_wind(now):
+    """Fetch the latest GFS run as a series of frames (every FRAME_STEP h) so the page can
+    animate the wind forward in time. Frames are only re-downloaded when a new run appears."""
+    import numpy as np
+
+    old = None
+    try:
+        with open(os.path.join(OUT, "wind.json"), encoding="utf-8") as f:
+            old = json.load(f)
+    except Exception:
+        pass
 
     cyc0 = now.replace(minute=0, second=0, microsecond=0)
     cyc0 = cyc0.replace(hour=cyc0.hour - cyc0.hour % 6)
     for k in range(5):
         cyc = cyc0 - timedelta(hours=6 * k)
-        lead = (now - cyc).total_seconds() / 3600.0
-        fh = max(0, min(48, int(round(lead / 3.0)) * 3))
-        url = (
-            "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p50.pl"
-            f"?dir=%2Fgfs.{cyc:%Y%m%d}%2F{cyc:%H}%2Fatmos"
-            f"&file=gfs.t{cyc:%H}z.pgrb2full.0p50.f{fh:03d}"
-            "&var_UGRD=on&var_VGRD=on&lev_10_m_above_ground=on"
-        )
+        # the run is usable once its last needed frame is published
         try:
-            data = get(url, timeout=120, tries=2)
+            probe = get(gfs_url(cyc, FRAME_MAX), timeout=120, tries=2)
         except Exception as e:
-            log("GFS", cyc, fh, "failed:", e)
+            log("GFS", cyc, "probe failed:", e)
             continue
-        if data[:4] != b"GRIB":
-            log("GFS", cyc, fh, "not available yet")
+        if probe[:4] != b"GRIB":
+            log("GFS", cyc, "not complete yet")
             continue
-        fields = {}
-        with tempfile.NamedTemporaryFile(suffix=".grb2") as tmp:
-            tmp.write(data)
-            tmp.flush()
-            with open(tmp.name, "rb") as f:
-                while True:
-                    g = eccodes.codes_grib_new_from_file(f)
-                    if g is None:
-                        break
-                    try:
-                        name = eccodes.codes_get(g, "shortName")
-                        ni = eccodes.codes_get(g, "Ni")
-                        nj = eccodes.codes_get(g, "Nj")
-                        vals = eccodes.codes_get_values(g).reshape(nj, ni)
-                        fields[name] = vals
-                    finally:
-                        eccodes.codes_release(g)
-        if "10u" not in fields or "10v" not in fields:
-            log("GFS", cyc, fh, "missing fields", list(fields))
+        if old and old.get("cycle") == iso(cyc) and old.get("frames") and all(
+            os.path.exists(os.path.join(OUT, fr["file"])) for fr in old["frames"]
+        ):
+            log("GFS", cyc, "already have this run")
+            return old
+        os.makedirs(os.path.join(OUT, "wind"), exist_ok=True)
+        frames, peak = [], 0.0
+        for fh in range(0, FRAME_MAX + 1, FRAME_STEP):
+            data = probe if fh == FRAME_MAX else None
+            if data is None:
+                try:
+                    data = get(gfs_url(cyc, fh), timeout=120, tries=3)
+                except Exception as e:
+                    log("GFS", cyc, fh, "failed:", e)
+                    continue
+                time.sleep(1.0)  # be gentle with NOMADS
+            if data[:4] != b"GRIB":
+                continue
+            uv = decode_uv(data)
+            if uv is None:
+                continue
+            name = f"wind/f{fh:03d}.png"
+            save_uv(uv[0], uv[1], os.path.join(OUT, name))
+            peak = max(peak, float(np.hypot(*uv).max()))
+            frames.append({"file": name, "fh": fh, "valid": iso(cyc + timedelta(hours=fh))})
+        if len(frames) < 3:
+            log("GFS", cyc, "too few frames")
             continue
-        u, v = fields["10u"], fields["10v"]
-        nj, ni = u.shape
-        # GRIB rows run 90N -> 90S and columns 0E -> 359.5E; shift so column 0 is 180W,
-        # matching the equirectangular Earth textures (top row = north).
-        u = np.roll(u, -ni // 2, axis=1)
-        v = np.roll(v, -ni // 2, axis=1)
-        enc = lambda a: np.clip(np.rint((a + WMAX) / (2 * WMAX) * 255.0), 0, 255).astype("uint8")
-        rgb = np.dstack([enc(u), enc(v), np.zeros_like(enc(u))])
-        Image.fromarray(rgb, "RGB").save(os.path.join(OUT, "wind.png"), optimize=True)
-        valid = cyc + timedelta(hours=fh)
-        speed = np.hypot(u, v)
+        # remove frames from older runs
+        keep = {fr["file"] for fr in frames}
+        for fn in os.listdir(os.path.join(OUT, "wind")):
+            if f"wind/{fn}" not in keep:
+                os.remove(os.path.join(OUT, "wind", fn))
+        # wind.png stays as the frame closest to now, for older clients
+        best = min(frames, key=lambda fr: abs((datetime.fromisoformat(fr["valid"].replace("Z", "+00:00")) - now).total_seconds()))
+        with open(os.path.join(OUT, best["file"]), "rb") as a, open(os.path.join(OUT, "wind.png"), "wb") as b:
+            b.write(a.read())
         meta = {
             "source": "NOAA GFS 0.5°, 10 m wind",
             "cycle": iso(cyc),
-            "forecastHour": fh,
-            "valid": iso(valid),
-            "width": int(ni),
-            "height": int(nj),
+            "forecastHour": best["fh"],
+            "valid": best["valid"],
+            "width": 720,
+            "height": 361,
             "wmax": WMAX,
-            "maxSpeed": round(float(speed.max()), 1),
+            "maxSpeed": round(peak, 1),
+            "frames": frames,
             "updated": iso(now),
         }
         write_if_changed("wind.json", meta)
-        log("GFS ok", meta)
+        log("GFS ok", cyc, len(frames), "frames")
         return meta
     raise RuntimeError("no GFS cycle available")
 
